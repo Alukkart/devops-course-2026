@@ -31,8 +31,7 @@ fi
 # изменения отслеживаемых файлов (рабочая копия и индекс) и любые неучтённые файлы в site/
 if [[ -n "$(git status --porcelain --untracked-files=no)" || -n "$(git status --porcelain -- site/)" ]]; then
     err "в репозитории есть незафиксированные изменения — доставка отменена:"
-    git status --short --untracked-files=no >&2
-    git status --short -- site/ >&2
+    { git status --short --untracked-files=no; git status --short -- site/; } | sort -u >&2
     exit 1
 fi
 
