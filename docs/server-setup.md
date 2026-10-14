@@ -124,3 +124,86 @@ sudo ufw enable
 |---|---|
 | `01-clean-install` | после установки Ubuntu Server, до настройки (ПР № 5, раздел 3) |
 | `03-ssh-hardened` | после настройки SSH, UFW и DNS (ПР № 5) |
+| `04-nginx-https` | 14.10.2026, после установки Nginx и перевода ресурса на HTTPS (ПР № 6) |
+
+## 8. Веб-сервер
+
+**Пакет:** `nginx` из репозитория Ubuntu (версия 1.24.0), служба `nginx.service` включена в автозапуск.
+
+```bash
+sudo apt update && sudo apt install -y nginx
+```
+
+Главный процесс работает от `root`, рабочие — от `www-data`. Порты 80 и 443 разрешены правилами UFW из раздела 6 (профиль `Nginx Full` не используется).
+
+**Конфигурация ресурса:** `/etc/nginx/sites-available/devops-site`, активируется символической ссылкой в `/etc/nginx/sites-enabled/`; стандартный ресурс отключён (ссылка `sites-enabled/default` удалена, файл в `sites-available` сохранён).
+
+```nginx
+# Блок 1: перенаправление HTTP -> HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name devops.local;
+
+    return 301 https://$host$request_uri;
+}
+
+# Блок 2: ресурс по HTTPS
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name devops.local;
+
+    ssl_certificate     /etc/ssl/certs/devops.crt;
+    ssl_certificate_key /etc/ssl/private/devops.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    root /var/www/devops-site;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    error_page 404 /404.html;
+
+    access_log /var/log/nginx/devops-site.access.log;
+    error_log /var/log/nginx/devops-site.error.log;
+}
+```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/devops-site /etc/nginx/sites-enabled/
+sudo rm /etc/nginx/sites-enabled/default
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+HSTS не включается (самоподписанный сертификат).
+
+**Каталог ресурса:** `/var/www/devops-site`, владелец `devops:devops`, права каталогов 755, файлов 644 (модель «владелец пишет, веб-сервер читает»). Содержимое доставляется из каталога `site/` репозитория сценарием `scripts/deploy.sh` (`rsync -avz --delete --chmod=D755,F644`).
+
+```bash
+sudo mkdir -p /var/www/devops-site
+sudo chown -R devops:devops /var/www/devops-site
+```
+
+**Сертификат и ключ:**
+
+| Файл | Владелец | Права |
+|---|---|---|
+| `/etc/ssl/certs/devops.crt` (сертификат) | root:root | 644 |
+| `/etc/ssl/private/devops.key` (закрытый ключ RSA 2048) | root:root | 600 |
+
+Формирование самоподписанного сертификата, срок действия 365 дней (выпущен 14.10.2026, истекает 14.10.2027):
+
+```bash
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/devops.key \
+  -out /etc/ssl/certs/devops.crt \
+  -subj "/CN=devops.local" \
+  -addext "subjectAltName=DNS:devops.local"
+```
+
+Сертификат копируется на хост по SSH и указывается клиентам как доверенный: `scp devops:/etc/ssl/certs/devops.crt ~/devops.crt`, `curl --cacert ~/devops.crt https://devops.local`.
+
+**Журналы:** `/var/log/nginx/devops-site.access.log`, `/var/log/nginx/devops-site.error.log` (запросы к блоку перенаправления — в общий `/var/log/nginx/access.log`).
