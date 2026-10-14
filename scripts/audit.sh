@@ -40,5 +40,13 @@ check "Сертификат действителен ещё ${CERT_MIN_DAYS} д�
 check "Нет файлов ресурса с записью для всех" "0"     "$(find "$SITE_DIR" -perm -o+w | wc -l)"
 check "Права закрытого ключа равны 600"      "600"    "$(sudo stat -c '%a' "$KEY")"
 
+echo "[5] Контейнеризация"
+APP_ENV="${APP_ENV:-$HOME/app/.env}"
+check "Служба docker активна"                  "active"  "$(systemctl is-active docker)"
+check "Контейнер СУБД в состоянии healthy"     "healthy" "$(docker inspect -f '{{.State.Health.Status}}' app-db-1 2>/dev/null || echo absent)"
+check "Порты 5000/5432 только на 127.0.0.1"    "0" \
+      "$(ss -tln | awk '$4 ~ /:(5000|5432)$/ && $4 !~ /^127\.0\.0\.1:/' | wc -l)"
+check "Права файла .env равны 600"             "600"     "$(stat -c '%a' "$APP_ENV" 2>/dev/null || echo absent)"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
