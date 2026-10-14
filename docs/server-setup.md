@@ -55,7 +55,7 @@ VBoxManage modifyvm devops-vm --natpf1 "ssh,tcp,127.0.0.1,2222,,2222"
 
 | Имя | Группы | Аутентификация |
 |---|---|---|
-| `devops` | `devops`, `sudo`, `users` (с ПР № 7 также `docker`) | только по ключу Ed25519 (`~/.ssh/devops_vm` на хосте), пароль для sudo |
+| `devops` | `devops`, `sudo`, `users`, `docker` | только по ключу Ed25519 (`~/.ssh/devops_vm` на хосте), пароль для sudo |
 | `student` | `student`, `sudo` | учётная запись установки, вход по SSH запрещён директивой `AllowUsers` |
 
 Права: `~/.ssh` — 700, `~/.ssh/authorized_keys` — 600, владелец `devops`.
@@ -125,6 +125,7 @@ sudo ufw enable
 | `01-clean-install` | после установки Ubuntu Server, до настройки (ПР № 5, раздел 3) |
 | `03-ssh-hardened` | после настройки SSH, UFW и DNS (ПР № 5) |
 | `04-nginx-https` | 14.10.2026, после установки Nginx и перевода ресурса на HTTPS (ПР № 6) |
+| `05-docker-compose` | 14.10.2026, после установки Docker и запуска проекта «приложение + СУБД» (ПР № 7) |
 
 ## 8. Веб-сервер
 
@@ -207,3 +208,66 @@ sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 Сертификат копируется на хост по SSH и указывается клиентам как доверенный: `scp devops:/etc/ssl/certs/devops.crt ~/devops.crt`, `curl --cacert ~/devops.crt https://devops.local`.
 
 **Журналы:** `/var/log/nginx/devops-site.access.log`, `/var/log/nginx/devops-site.error.log` (запросы к блоку перенаправления — в общий `/var/log/nginx/access.log`).
+
+## 9. Контейнеризация
+
+**Docker Engine** установлен из официального репозитория Docker (пакет `docker.io` из репозитория Ubuntu не используется, конфликтующие пакеты удалены): Docker Engine 29.9.1, плагин Compose v5.6.0, архитектура arm64.
+
+```bash
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove -y $pkg; done
+sudo apt-get update && sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+**Участники группы `docker`:** только `devops` (имеет право sudo). Членство в группе равносильно правам root, поэтому учётные записи без sudo в группу не включаются.
+
+```bash
+sudo usermod -aG docker devops   # затем новая SSH-сессия
+```
+
+**Проект на сервере:** `/home/devops/app` (имя проекта Compose — `app`). Исходный код хранится в каталоге `app/` репозитория и доставляется командой `rsync -avz --delete --exclude=.env app/ devops:app/`. Состав: `app.py`, `requirements.txt`, `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `.env.example`.
+
+| Сервис | Образ | Контейнер | Назначение |
+|---|---|---|---|
+| `app` | `devops-app:1.0` (собирается из `Dockerfile`, процесс от пользователя `app`, uid 999) | `app-app-1` | Flask + gunicorn, порт 5000 |
+| `db` | `postgres:16-alpine` | `app-db-1` | PostgreSQL 16, healthcheck `pg_isready` |
+
+Запуск: `cd ~/app && docker compose up -d --build`; политика перезапуска `unless-stopped`.
+
+**Файл `.env`:** `/home/devops/app/.env`, владелец `devops`, права 600; создаётся только на сервере из шаблона, пароль СУБД генерируется случайно; в репозиторий и образ не попадает (`.gitignore`, `.dockerignore`, `rsync --exclude=.env`).
+
+```bash
+cd ~/app && cp .env.example .env && chmod 600 .env
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+```
+
+**Публикуемые порты и адреса:**
+
+| Порт | Адрес | Доступ |
+|---|---|---|
+| 5000/tcp (app) | `127.0.0.1:5000` | только для Nginx на этой же машине |
+| 5432/tcp (db) | не публикуется | только из сети проекта `app_backend` по имени `db` |
+
+Порты на `0.0.0.0` не публикуются: правила Docker в iptables обрабатываются до правил UFW.
+
+**Сети и тома:** пользовательская bridge-сеть `app_backend`; именованный том `app_db_data` → `/var/lib/postgresql/data` (сохраняется при `docker compose down`, удаляется только `down -v`).
+
+**Обратный прокси-сервер:** в блок HTTPS `/etc/nginx/sites-available/devops-site` (раздел 8) добавлено расположение, статический ресурс `/` сохранён:
+
+```nginx
+    location /app/ {
+        proxy_pass http://127.0.0.1:5000/;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+```
+
+Применение: `sudo nginx -t && sudo systemctl reload nginx`. Приложение доступно по `https://devops.local/app/`.
