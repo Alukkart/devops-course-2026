@@ -126,6 +126,8 @@ sudo ufw enable
 | `03-ssh-hardened` | после настройки SSH, UFW и DNS (ПР № 5) |
 | `04-nginx-https` | 14.10.2026, после установки Nginx и перевода ресурса на HTTPS (ПР № 6) |
 | `05-docker-compose` | 14.10.2026, после установки Docker и запуска проекта «приложение + СУБД» (ПР № 7) |
+| `06-before-kr2` | 23.10.2026, перед контрольной работой № 2 |
+| `07-kr2` | 23.10.2026, после развёртывания kv.devops.local (КР № 2) |
 
 ## 8. Веб-сервер
 
@@ -271,3 +273,34 @@ sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
 ```
 
 Применение: `sudo nginx -t && sudo systemctl reload nginx`. Приложение доступно по `https://devops.local/app/`.
+
+## 10. Контрольная работа № 2 (вариант 4)
+
+**Проект:** `/home/devops/kr2` (репозиторий `devops-kr2`, ветка `kr2/variant-4`), доставка: `rsync -avz --delete --exclude=.env --exclude=.git ./ devops:kr2/`.
+
+| Сервис | Образ | Порт | Пользователь |
+|---|---|---|---|
+| `app` | `kr2-app:1.0` (python:3.12-slim, gunicorn на 0.0.0.0:8004) | `127.0.0.1:8004` | `app` (uid 999) |
+| `redis` | `redis:7-alpine`, `--appendonly yes --requirepass` | не публикуется | `redis` (uid 999) |
+
+Сеть `kr2_backend`, том `kr2_redis_data` → `/data`, `depends_on: service_healthy` (healthcheck `redis-cli ping`), `restart: unless-stopped`.
+
+**Секрет:** `/home/devops/kr2/.env` (права 600, владелец devops), `REDIS_PASSWORD` — 64 hex-символа:
+
+```bash
+cd ~/kr2 && cp .env.example .env && chmod 600 .env
+sed -i "s/^REDIS_PASSWORD=.*/REDIS_PASSWORD=$(openssl rand -hex 32)/" .env
+docker compose up -d --build
+```
+
+**Публикация:** `https://kv.devops.local` (на хосте в `/etc/hosts`: `192.168.56.2 kv.devops.local`). Конфигурация `/etc/nginx/sites-available/kr2` (ссылка в `sites-enabled`): блок 80 → `return 301 https://$host$request_uri`, блок 443 → `proxy_pass http://127.0.0.1:8004` с заголовками Host, X-Real-IP, X-Forwarded-For, X-Forwarded-Proto; журналы `/var/log/nginx/kr2.{access,error}.log`.
+
+Сертификат `/etc/ssl/certs/kr2.crt` (644), ключ `/etc/ssl/private/kr2.key` (600, root), 365 дней:
+
+```bash
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/ssl/private/kr2.key -out /etc/ssl/certs/kr2.crt \
+  -subj "/CN=kv.devops.local" -addext "subjectAltName=DNS:kv.devops.local"
+```
+
+Правила UFW не менялись. Контроль — раздел [6] `scripts/audit.sh`.

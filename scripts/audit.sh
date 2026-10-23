@@ -48,5 +48,19 @@ check "Порты 5000/5432 только на 127.0.0.1"    "0" \
       "$(ss -tln | awk '$4 ~ /:(5000|5432)$/ && $4 !~ /^127\.0\.0\.1:/' | wc -l)"
 check "Права файла .env равны 600"             "600"     "$(stat -c '%a' "$APP_ENV" 2>/dev/null || echo absent)"
 
+echo "[6] Контрольная работа № 2"
+KR2_DIR="${KR2_DIR:-$HOME/kr2}"
+KR2_PORT=8004
+kr2() { docker compose --project-directory "$KR2_DIR" "$@" 2>/dev/null; }
+KR2_REDIS_ID="$(kr2 ps -q redis)"
+check "Контейнер redis в состоянии healthy"     "healthy" \
+      "$(docker inspect -f '{{.State.Health.Status}}' "${KR2_REDIS_ID:-none}" 2>/dev/null || echo absent)"
+check "Порт ${KR2_PORT} опубликован только на 127.0.0.1" "127.0.0.1:${KR2_PORT}" \
+      "$(kr2 port --index 1 app "$KR2_PORT" || echo absent)"
+check "Права файла kr2/.env равны 600"         "600"     "$(stat -c '%a' "$KR2_DIR/.env" 2>/dev/null || echo absent)"
+check "Сертификат kr2 действителен ещё ${CERT_MIN_DAYS} дн." "ok" \
+      "$(openssl x509 -in /etc/ssl/certs/kr2.crt -noout -checkend $((CERT_MIN_DAYS * 86400)) >/dev/null 2>&1 && echo ok || echo expiring)"
+check "Ресурс kr2 активирован в Nginx"          "yes"     "$([[ -L /etc/nginx/sites-enabled/kr2 ]] && echo yes || echo no)"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
